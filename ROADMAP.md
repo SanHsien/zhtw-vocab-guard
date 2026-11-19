@@ -5,13 +5,12 @@
 
 ## 現況
 
-台灣繁體中文技術詞彙檢查器（一支工具、33 條規則、39 個測試，只用 Python 標準函式庫），2026-11-19 自 ai-inbox 抽出並保留原檔歷史，MIT 授權。抽出當下只完成本機準備：本機測試與自我檢查通過；GitHub repo 尚未建立，CI、CodeQL、Dependabot 的設定檔已放好但還沒有實際跑過。沒有套件 manifest，依賴新鮮度與歷史壓縮以 `.github/dependabot.yml` 的 waiver 註明理由。
+台灣繁體中文技術詞彙檢查器（一支工具、33 條規則、39 個測試，只用 Python 標準函式庫），2026-11-19 自 ai-inbox 抽出並保留原檔歷史，MIT 授權。已發布為公開 repo `SanHsien/zhtw-vocab-guard`，第一次 `CI` 與 `CodeQL` 皆 success，Dependabot 已啟用。沒有套件 manifest，依賴新鮮度與歷史壓縮以 `.github/dependabot.yml` 的 waiver 註明理由。
 
 ## 近期：可以直接動手
 
 | 項目 | 為什麼 | 驗收方式 | 建議執行者 | 證據 |
 | --- | --- | --- | --- | --- |
-| 發布到 GitHub 並確認第一次 CI | repo 目前只在本機 | 建立公開 repo `SanHsien/zhtw-vocab-guard` 並推送；`CI`、`CodeQL` 第一次執行皆 success；改寫本檔現況段 | 維護者／整合者 | 本檔現況段 |
 
 ## 中期：等條件成立再做
 
