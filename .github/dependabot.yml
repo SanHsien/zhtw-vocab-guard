@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # 工具只用 Python 標準函式庫（AGENTS.md 鐵律 5），沒有套件 manifest，也沒有宣告過任何
+  # 第三方下限；唯一可由機器更新的依賴面是 workflow 裡釘住 SHA 的 actions。
+  # fleet-waiver: freshness -- 只用標準函式庫，沒有套件 manifest 可以拿來比對宣告下限
+  #
+  # 本 repo 2026-11-19 自 ai-inbox 抽出，晚於艦隊 2026-08-23 的一次性歷史壓縮，而且
+  # AGENTS.md 明定保留 ai-inbox 的原始歷史；正常累積的提交不壓。
+  # fleet-waiver: multi-commit -- 2026-11-19 建立，晚於一次性壓縮；AGENTS.md 明定保留 ai-inbox 原始歷史
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Asia/Taipei"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"

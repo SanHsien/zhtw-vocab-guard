@@ -59,7 +59,7 @@
 
 ```powershell
 python tools/verify_zhtw_vocab.py --verify-idempotent
-python tools/verify_zhtw_vocab.py --verify-idempotent --check notes docs templates README.md
+python tools/verify_zhtw_vocab.py --verify-idempotent --check README.md docs
 python tools/verify_zhtw_vocab.py --fix path/to/file.md
 ```
 
