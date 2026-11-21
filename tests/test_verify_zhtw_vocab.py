@@ -544,6 +544,139 @@ class TestVerifyZhtwVocab(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "服務器\n")
             self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["a.md"])
 
+    # ── 書名號《》〈〉：作品名照原文引用，與「」『』共用同一套保護 ─────────────────
+
+    TITLE_SAMPLES_PROTECTED = [
+        "NiceKate AI《迷上 Opus 5.5 做視頻：10個案例》與 Code-as-Video",
+        "# 評估：《迷上 Opus 5.5 做視頻：10個案例》",
+        "| 2026-11-20 | [評估《做視頻：10個案例》](./notes/a.md) | 0 / 1 |",
+        "單篇〈談軟件與硬件〉收錄於《數據庫年鑑》",
+        "《數據庫\n源代碼》",
+        "《外「視頻」內》",
+        "「外《視頻》內」",
+        "《外〈視頻〉內》",
+        "『外〈軟件〉內』",
+        "《數據庫與 `代碼`》",
+        "《服務器 https://example.org/視頻?a=1 入門》",
+        "《[視頻](https://example.org/視頻) 教學》",
+        r"《a \| b 視頻》",
+        "《" + "a" * 196 + "視頻》",
+    ]
+    TITLE_SAMPLES_UNPROTECTED = [
+        # 錯配：只有開或只有關
+        ("只有《視頻 沒有關", ["視頻"]),
+        ("只有〈軟件 沒有關", ["軟件"]),
+        ("沒有開 視頻》", ["視頻"]),
+        # 錯配：關閉符號不是堆疊頂端那一種
+        ("《視頻〉", ["視頻"]),
+        ("〈視頻》", ["視頻"]),
+        ("《a「b》 視頻」", ["視頻"]),
+        ("「a《b」 視頻》", ["視頻"]),
+        # 跨空白段落、跨表格欄、超過長度上限
+        ("標題《視頻很好\n\n中間段落 軟件\n\n結尾》之後 硬件", ["視頻", "軟件", "硬件"]),
+        ("《視頻\n  \n軟件》", ["視頻", "軟件"]),
+        ("| 《視頻 | 軟件 |\n| 硬件 | 服務器》 |", ["視頻", "軟件", "硬件", "服務器"]),
+        ("〈視頻 | 軟件〉", ["視頻", "軟件"]),
+        ("《" + "a" * 200 + "視頻》", ["視頻"]),
+        ("〈" + "a" * 200 + "視頻〉", ["視頻"]),
+        # 書名號外的同一詞照報
+        ("《做視頻：10個案例》這支視頻", ["視頻"]),
+        ("視頻〈軟件〉硬件", ["視頻", "硬件"]),
+    ]
+
+    def test_title_marks_protect_original_titles(self):
+        for raw in self.TITLE_SAMPLES_PROTECTED:
+            with self.subTest(raw=raw):
+                self.assert_protected(raw)
+
+    def test_title_marks_do_not_protect_outside_text(self):
+        self.assertEqual(
+            apply_zhtw_vocab("《做視頻：10個案例》這支視頻用了軟件", skip_code=True),
+            "《做視頻：10個案例》這支影片用了軟體",
+        )
+        self.assertEqual(
+            apply_zhtw_vocab("〈數據庫〉及數據庫", skip_code=True),
+            "〈數據庫〉及資料庫",
+        )
+        # 行號不因保護而位移
+        hits = scan_degraded_vocab("《數據庫\n源代碼》\n數據庫")
+        self.assertEqual([(h["line"], h["term"]) for h in hits], [(3, "數據庫")])
+
+    def test_title_mark_protection_is_bounded_like_quotes(self):
+        for raw, terms in self.TITLE_SAMPLES_UNPROTECTED:
+            with self.subTest(raw=raw):
+                self.assertEqual([h["term"] for h in scan_degraded_vocab(raw)], terms)
+                fixed = apply_zhtw_vocab(raw, skip_code=True)
+                self.assertNotEqual(fixed, raw)
+                self.assertEqual(scan_degraded_vocab(fixed), [])
+
+    def test_title_marks_inside_code_or_url_do_not_open_protection(self):
+        # 程式碼與 URL 先被保護，裡面的書名號不能開啟或關閉外面的保護。
+        for raw, expected in [
+            ("`《` 視頻 `》`", "`《` 影片 `》`"),
+            ("```text\n《\n```\n視頻》", "```text\n《\n```\n影片》"),
+            ("[x](a《b.md) 視頻》", "[x](a《b.md) 影片》"),
+            ("《書》https://example.org/視頻 視頻", "《書》https://example.org/視頻 影片"),
+        ]:
+            with self.subTest(raw=raw):
+                self.assertEqual(apply_zhtw_vocab(raw, skip_code=True), expected)
+                self.assertEqual(scan_degraded_vocab(expected), [])
+
+    def test_title_marks_wrapping_a_long_passage_are_still_checked(self):
+        # 濫用反例：把整段大陸用語包進書名號。超過長度上限就不保護。
+        passage = "這個軟件需要服務器與數據庫，" * 20
+        self.assertGreater(len(passage), vocab._QUOTE_LIMIT)
+        raw = "《" + passage + "》"
+        self.assertEqual(len(scan_degraded_vocab(raw)), 60)
+        fixed = apply_zhtw_vocab(raw, skip_code=True)
+        self.assertEqual(fixed, "《" + "這個軟體需要伺服器與資料庫，" * 20 + "》")
+        # 上限內的短句仍會被保護：這是已知限制，文件要寫明。
+        self.assert_protected("《這個軟件需要服務器》")
+        for name in ("README.md", "README.en.md"):
+            text = (Path(__file__).resolve().parents[1] / name).read_text(encoding="utf-8")
+            self.assertIn("《》", text)
+            self.assertIn("〈〉", text)
+        self.assertIn("《》", vocab.__doc__)
+        self.assertIn("〈〉", vocab.__doc__)
+
+    def test_title_mark_samples_are_idempotent_and_check_fix_consistent(self):
+        samples = self.TITLE_SAMPLES_PROTECTED + [raw for raw, _ in self.TITLE_SAMPLES_UNPROTECTED]
+        samples += [
+            "《" + "型別別" * 80 + "》 型別別別",
+            "《" + "a" * 190 + "字面量（Literal）（Literal）（Literal）》視頻",
+            "《視頻》" * 50 + "《視頻",
+        ]
+        for raw in samples:
+            with self.subTest(raw=raw):
+                once = apply_zhtw_vocab(raw, skip_code=True)
+                self.assertEqual(apply_zhtw_vocab(once, skip_code=True), once)
+                self.assertEqual(scan_degraded_vocab(once), [])
+                if not scan_degraded_vocab(raw):
+                    self.assertEqual(once, raw)
+        ok, failures = verify_idempotence(samples)
+        self.assertTrue(ok, failures)
+
+    def test_unclosed_title_marks_have_bounded_runtime(self):
+        for token in ["《", "〈"]:
+            with self.subTest(token=token):
+                raw = (token + " 視頻\n") * 5000
+                started = time.perf_counter()
+                self.assertEqual(len(scan_degraded_vocab(raw)), 5000)
+                self.assertLess(time.perf_counter() - started, 3.0)
+
+    def test_cli_title_marks_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "note.md"
+            original = "# 評估：《迷上 Opus 5.5 做視頻：10個案例》\n\n單篇〈談軟件〉。\n"
+            p.write_text(original, encoding="utf-8", newline="")
+            self.assertEqual(main(["--check", str(p)]), 0)
+            self.assertEqual(main(["--fix", str(p)]), 0)
+            self.assertEqual(p.read_bytes(), original.encode("utf-8"))
+            p.write_text(original + "這支視頻。\n", encoding="utf-8", newline="")
+            self.assertEqual(main(["--check", str(p)]), 1)
+            self.assertEqual(main(["--fix", str(p)]), 0)
+            self.assertEqual(p.read_bytes(), (original + "這支影片。\n").encode("utf-8"))
+
     def test_cli_check_and_fix_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "sample.md"

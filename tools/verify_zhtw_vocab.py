@@ -10,11 +10,12 @@ Taiwan Traditional Chinese Technical Vocabulary & OpenCC Second-Pass Guard (veri
    參考檔案→參考文件、摁下→按下）
 3. 驗證轉換函數之嚴格冪等性：apply_zhtw_vocab(apply_zhtw_vocab(text)) == apply_zhtw_vocab(text)
 
-skip_code=True（CLI 預設）先保護程式碼、成對中文引號與 URL／連結目的地。
+skip_code=True（CLI 預設）先保護程式碼、成對中文引號「」『』、成對書名號《》〈〉與 URL／連結目的地。
 圍欄前可有 BOM、空白／Tab 縮排、引用標記 > 與清單標記；四格縮排程式碼區塊與 HTML <code>/<pre> 不保護。
 規則前後字例外另含：型別別名、資源／來源／電源代碼、命令行為／行動／行事、明瞭什麼。
 --fix 先算出全部改寫並確認目標都可寫，才逐檔以暫存檔加 os.replace 原子替換；多檔之間沒有交易回滾。
-引號保護最多 200 字且不可跨空白段落或表格欄；錯配引號不保護。
+引號與書名號共用同一套保護：最多 200 字且不可跨空白段落或表格欄；錯配不保護，四種符號可互相巢狀。
+書名號保護不判斷裡面是不是作品名：200 字內的任何文字包進《》或〈〉都不檢查、不修補。
 裸 URL 允許中文，遇空白、全形標點或未配對右括號即停；含規則詞時 CLI 提示人工確認。
 [REVIEW] 僅提示人工確認，不影響結束碼；[ALERT] 詞彙問題才使檢查失敗。
 連結目的地限同一行，標題照常檢查；不是完整 Markdown 或語義解析器。
@@ -105,6 +106,9 @@ _BARE_URL_RE = re.compile(
 )
 _AUTOLINK_RE = re.compile(r"<(?:https?://|ftp://|(?<![A-Za-z0-9_])www\.)[^<>\s]+>")
 _QUOTE_LIMIT = 200
+# 成對保護的開關符號：引號保原話，書名號保作品原名。四種共用同一個堆疊與中止條件。
+_QUOTE_PAIRS = {"「": "」", "『": "』", "《": "》", "〈": "〉"}
+_QUOTE_CLOSERS = frozenset(_QUOTE_PAIRS.values())
 _REFERENCE_RE = re.compile(r"(?m)^ {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(<[^<>\n]+>|[^\s]+)")
 # Match immediate neighbours, independent of the surrounding sentence.
 # 「數位」後面接這些字時是 digital 複合詞的開頭（數位轉型、數位簽章、數位相機…），不是數字。
@@ -133,7 +137,7 @@ _FORCED_CONTEXT = {
     # 公開源代碼＝公開＋源代碼，不是「公」＋「開源代碼」。
     "源代碼": (("公開",), ()),
 }
-_PROTECTED_START_RE = re.compile(r"[「『]|\]\(|<(?=(?:https?://|ftp://|(?<![A-Za-z0-9_])www\.))|(?:https?://|ftp://|(?<![A-Za-z0-9_])www\.)")
+_PROTECTED_START_RE = re.compile(r"[「『《〈]|\]\(|<(?=(?:https?://|ftp://|(?<![A-Za-z0-9_])www\.))|(?:https?://|ftp://|(?<![A-Za-z0-9_])www\.)")
 
 
 def _inline_parts(line: str) -> List[Tuple[bool, str]]:
@@ -271,7 +275,7 @@ def _protected_parts(text: str, url_hints: Optional[List[Tuple[int, str]]] = Non
     """Share exact protected spans between checking and rewriting.
 
     Code is masked first so quote characters inside code cannot open a quote.
-    Quotes are bounded by length, paragraphs and table cells. Same-line Markdown
+    Quotes and title marks (「」『』《》〈〉) are bounded by length, paragraphs and table cells. Same-line Markdown
     destinations support nested/escaped parentheses and reference definitions;
     titles remain prose. This deliberately is not a full Markdown parser.
     """
@@ -319,8 +323,8 @@ def _protected_parts(text: str, url_hints: Optional[List[Tuple[int, str]]] = Non
         start = match.start()
         token = match.group()
         end = match.end()
-        if token in ("「", "『"):
-            stack = ["」" if token == "「" else "』"]
+        if token in _QUOTE_PAIRS:
+            stack = [_QUOTE_PAIRS[token]]
             while end < min(len(prose), start + _QUOTE_LIMIT) and stack:
                 char = prose[end]
                 if char == "\\" and end + 1 < len(prose) and prose[end + 1] in "\\|":
@@ -329,10 +333,10 @@ def _protected_parts(text: str, url_hints: Optional[List[Tuple[int, str]]] = Non
                 if char == "|" or (char == "\n" and
                                    re.match(r"[ \t\r]*\n", prose[end + 1:end + _QUOTE_LIMIT])):
                     break
-                if char in ("」", "』") and char != stack[-1]:
+                if char in _QUOTE_CLOSERS and char != stack[-1]:
                     break
-                if char in ("「", "『"):
-                    stack.append("」" if char == "「" else "』")
+                if char in _QUOTE_PAIRS:
+                    stack.append(_QUOTE_PAIRS[char])
                 elif char == stack[-1]:
                     stack.pop()
                 end += 1
@@ -394,7 +398,7 @@ def apply_zhtw_vocab(text: str, skip_code: bool = False) -> str:
     """
     套用台灣繁體中文詞彙與 OpenCC 二次退化修補規則。
     - skip_code=False：直接對全文套用（等同保哥 convert.mjs 對純文件後處理）
-    - skip_code=True：保護程式碼、成對中文引號、連結目的地及裸 URL。
+    - skip_code=True：保護程式碼、成對中文引號與書名號、連結目的地及裸 URL。
     """
     if not skip_code:
         return _transform_non_code_segment(text)
@@ -406,7 +410,7 @@ def apply_zhtw_vocab(text: str, skip_code: bool = False) -> str:
 def scan_degraded_vocab(text: str, skip_code: bool = True) -> List[Dict[str, Any]]:
     """
     掃描文本中是否殘留未修補的 OpenCC 二次退化詞、語境誤轉詞或禁用大陸用語。
-    skip_code=True 時與改寫共用程式碼、中文引號與 URL 保護範圍。
+    skip_code=True 時與改寫共用程式碼、中文引號、書名號與 URL 保護範圍。
     """
     findings: List[Dict[str, Any]] = []
     if skip_code:
