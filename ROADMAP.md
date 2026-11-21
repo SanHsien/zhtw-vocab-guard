@@ -5,7 +5,7 @@
 
 ## 現況
 
-台灣繁體中文技術詞彙檢查器（一支工具、33 條規則、39 個測試，只用 Python 標準函式庫），2026-11-19 自 ai-inbox 抽出並保留原檔歷史，MIT 授權。已發布為公開 repo `SanHsien/zhtw-vocab-guard`，第一次 `CI` 與 `CodeQL` 皆 success，Dependabot 已啟用。沒有套件 manifest，依賴新鮮度與歷史壓縮以 `.github/dependabot.yml` 的 waiver 註明理由。
+台灣繁體中文技術詞彙檢查器（一支工具、34 條規則、45 個測試，只用 Python 標準函式庫），2026-11-19 自 ai-inbox 抽出並保留原檔歷史，MIT 授權。2026-11-21 完成第一次獨立對抗覆核，發現與修復紀錄見 [REVIEW.md](REVIEW.md)。已發布為公開 repo `SanHsien/zhtw-vocab-guard`，第一次 `CI` 與 `CodeQL` 皆 success，Dependabot 已啟用。沒有套件 manifest，依賴新鮮度與歷史壓縮以 `.github/dependabot.yml` 的 waiver 註明理由。
 
 ## 近期：可以直接動手
 
@@ -16,6 +16,7 @@
 
 | 項目 | 觸發條件 | 驗收方式 | 建議執行者 | 證據 |
 | --- | --- | --- | --- | --- |
+| 四格縮排程式碼區塊與 HTML `<code>`／`<pre>` 保護 | 實際出現 `--fix` 改到縮排程式碼或 HTML 程式碼的案例（清單內縮排的段落與縮排程式碼要靠清單語境才分得開） | 先寫誤改實例的回歸測試；清單內縮排的段落仍照常檢查；ai-inbox `--check` 無新增漏報 | Codex | REVIEW.md Z1 的剩餘邊界 |
 | 未加引號的專名保護、`支持→支援` 技術受詞白名單 | 實際出現專名被誤改（例如產品名含 `數據庫`），或需要擋 `支持 UTF-8` 這類用詞 | 先寫出誤改實例的回歸測試再改 `tools/verify_zhtw_vocab.py`；`支持` 只在白名單受詞前替換，`支持開源社群` 等反例不變；`--verify-idempotent --check README.md AGENTS.md ROADMAP.md docs` 通過，並在 ai-inbox 以 `--check notes docs templates README.md` 實跑無新增誤報 | Codex | [ai-inbox 的 speak-human-tw 評估第 6 節](https://github.com/SanHsien/ai-inbox/blob/main/docs/speak-human-tw-assessment.md)；引號、URL 保護與五條候選規則已於 2026-11-15 完成 |
 
 ## 刻意不做

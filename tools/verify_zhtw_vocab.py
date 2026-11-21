@@ -11,6 +11,9 @@ Taiwan Traditional Chinese Technical Vocabulary & OpenCC Second-Pass Guard (veri
 3. 驗證轉換函數之嚴格冪等性：apply_zhtw_vocab(apply_zhtw_vocab(text)) == apply_zhtw_vocab(text)
 
 skip_code=True（CLI 預設）先保護程式碼、成對中文引號與 URL／連結目的地。
+圍欄前可有 BOM、空白／Tab 縮排、引用標記 > 與清單標記；四格縮排程式碼區塊與 HTML <code>/<pre> 不保護。
+規則前後字例外另含：型別別名、資源／來源／電源代碼、命令行為／行動／行事、明瞭什麼。
+--fix 先算出全部改寫並確認目標都可寫，才逐檔以暫存檔加 os.replace 原子替換；多檔之間沒有交易回滾。
 引號保護最多 200 字且不可跨空白段落或表格欄；錯配引號不保護。
 裸 URL 允許中文，遇空白、全形標點或未配對右括號即停；含規則詞時 CLI 提示人工確認。
 [REVIEW] 僅提示人工確認，不影響結束碼；[ALERT] 詞彙問題才使檢查失敗。
@@ -23,8 +26,11 @@ skip_code=True（CLI 預設）先保護程式碼、成對中文引號與 URL／�
 """
 
 import argparse
+import os
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -33,7 +39,7 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
-if sys.stderr and hasattr(sys.stdout, "reconfigure"):
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
     try:
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
@@ -46,6 +52,7 @@ GLOBAL_VOCAB_RULES: Tuple[Tuple[str, str, str], ...] = (
     ("命令行介面", "命令列介面", "複合詞：命令行介面"),
     ("命令行", "命令列", "技術術語：command line"),
     ("環境變量", "環境變數", "技術術語：environment variable"),
+    ("開源代碼", "開源程式碼", "技術術語：open-source code（不可切成「開原始碼」）"),
     ("源代碼", "原始碼", "技術術語：source code"),
     ("服務器", "伺服器", "技術術語：server"),
     ("軟件", "軟體", "技術術語：software"),
@@ -88,7 +95,11 @@ DEGRADED_AND_CONTEXT_RULES: Tuple[Tuple[str, str, str], ...] = (
 ALL_RULES: Tuple[Tuple[str, str, str], ...] = GLOBAL_VOCAB_RULES + DEGRADED_AND_CONTEXT_RULES
 
 _BACKTICK_RUN_RE = re.compile(r"`+")
-_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# 圍欄前可有 BOM、任意空白／Tab（清單內縮）、引用標記 > 與清單標記（- * + 1. 1)）。
+# 寧可多保護：縮排程式碼區塊裡出現 ``` 行時，之後會被當成圍欄保護到下一個關閉行。
+_FENCE_OPEN_RE = re.compile(
+    r"^﻿?(?:[ \t]*(?:>|[-*+](?=[ \t])|[0-9]{1,9}[.)](?=[ \t])))*[ \t]*(`{3,}|~{3,})"
+)
 _BARE_URL_RE = re.compile(
     r"(?:https?://|ftp://|(?<![A-Za-z0-9_])www\.)[^\s<>`，。；：、（）「」『』【】“”‘’〈〉《》—…！？\uff00-\uffef]+"
 )
@@ -105,6 +116,22 @@ _CONTEXT_EXCEPTIONS = {
     "服務器": (("", "材"),),
     "軟件": (("柔鬆", "數"),),
     "硬件": (("堅", ""),),
+    # 型別別名（type alias）不是疊字退化。
+    "型別別": (("", "名"),),
+    # 資源代碼、來源代碼、電源代碼、能源代碼、水源代碼是「…源」＋「代碼」；開源代碼另有長規則。
+    "源代碼": (("資來電能水開", ""),),
+    "開源代碼": (("公", ""),),
+    # 命令行為／命令行動／命令行事是「命令」＋「行…」。
+    "命令行": (("", "為動事"),),
+    # 明瞭什麼：「明瞭」是台灣正確寫法。
+    "瞭什麼": (("明", ""),),
+}
+# 兩字語境強制命中，優先於上面的例外。
+_FORCED_CONTEXT = {
+    # 器材 may cross the match boundary; 材料 / 材質 describe a server.
+    "服務器": ((), ("材料", "材質")),
+    # 公開源代碼＝公開＋源代碼，不是「公」＋「開源代碼」。
+    "源代碼": (("公開",), ()),
 }
 _PROTECTED_START_RE = re.compile(r"[「『]|\]\(|<(?=(?:https?://|ftp://|(?<![A-Za-z0-9_])www\.))|(?:https?://|ftp://|(?<![A-Za-z0-9_])www\.)")
 
@@ -131,19 +158,61 @@ def _inline_parts(line: str) -> List[Tuple[bool, str]]:
     return parts
 
 
-def _rule_matches(text: str, src: str):
-    """Use the same narrow context exceptions in checking and rewriting."""
-    for match in re.finditer(re.escape(src), text):
-        before = text[match.start() - 1:match.start()] if match.start() else ""
-        after = text[match.end():match.end() + 1]
-        # 器材 may cross the match boundary; 材料 / 材質 describe a server.
-        if src == "服務器" and text[match.end():match.end() + 2] in ("材料", "材質"):
-            yield match
-            continue
-        if not any((not left or (bool(before) and before in left)) and
+def _match_allowed(text: str, start: int, end: int, src: str) -> bool:
+    """Apply the same narrow context exceptions in checking and rewriting."""
+    forced_before, forced_after = _FORCED_CONTEXT.get(src, ((), ()))
+    if text[max(0, start - 2):start] in forced_before or text[end:end + 2] in forced_after:
+        return True
+    before = text[start - 1:start] if start else ""
+    after = text[end:end + 1]
+    return not any((not left or (bool(before) and before in left)) and
                    (not right or (bool(after) and after in right))
-                   for left, right in _CONTEXT_EXCEPTIONS.get(src, ())):
+                   for left, right in _CONTEXT_EXCEPTIONS.get(src, ()))
+
+
+def _rule_matches(text: str, src: str):
+    for match in re.finditer(re.escape(src), text):
+        if _match_allowed(text, match.start(), match.end(), src):
             yield match
+
+
+def _splice(text: str, matches, replacement) -> str:
+    """Rebuild once per rule instead of re-slicing the whole text per match."""
+    pieces = []
+    last = 0
+    for match in matches:
+        pieces.append(text[last:match.start()])
+        pieces.append(replacement(match))
+        last = match.end()
+    if not pieces:
+        return text
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+
+def _collapse_repeats(text: str, src: str, dst: str) -> str:
+    """Rules like 型別別 -> 型別 cascade: 型別 + 別×k needs k passes.
+
+    Replay those passes per run in O(k) instead of rescanning the whole text k
+    times. A pass rewrites the run's leading occurrence unless its context is
+    excepted; the context only depends on the next two characters, so the
+    window is truncated to three suffix copies.
+    """
+    suffix = src[len(dst):]
+    pattern = re.compile(re.escape(dst) + "(?:" + re.escape(suffix) + ")+")
+
+    def replay(match):
+        k = (match.end() - match.start() - len(dst)) // len(suffix)
+        before = text[match.start() - 1:match.start()] if match.start() else ""
+        tail = text[match.end():match.end() + 2]
+        while k:
+            window = before + dst + suffix * min(k, 3) + (tail if k <= 3 else "")
+            if not _match_allowed(window, len(before), len(before) + len(src), src):
+                break
+            k = min(k - 1, 3)
+        return dst + suffix * k
+
+    return _splice(text, pattern.finditer(text), replay)
 
 
 def _line_parentheses(text: str) -> Dict[int, int]:
@@ -189,9 +258,10 @@ def _transform_non_code_segment(segment: str) -> str:
         previous = out
         for src, dst, _ in ALL_RULES:
             if src != dst and src in out:
-                matches = list(_rule_matches(out, src))
-                for match in reversed(matches):
-                    out = out[:match.start()] + dst + out[match.end():]
+                if len(src) > len(dst) and src.startswith(dst):
+                    out = _collapse_repeats(out, src, dst)
+                else:
+                    out = _splice(out, _rule_matches(out, src), lambda _m, d=dst: d)
         if out == previous:
             return out
     raise ValueError("詞庫規則循環，無法收斂至固定點")
@@ -366,9 +436,8 @@ def scan_degraded_vocab(text: str, skip_code: bool = True) -> List[Dict[str, Any
                             "reason": reason,
                         },
                     ))
-                for match in reversed(matches):
-                    inspect_text = (inspect_text[:match.start()] + " " * len(src)
-                                    + inspect_text[match.end():])
+                mask = " " * len(src)
+                inspect_text = _splice(inspect_text, matches, lambda _m: mask)
         line_hits.sort(key=lambda item: item[0])
         findings.extend(h for _, h in line_hits)
 
@@ -407,9 +476,30 @@ def _iter_target_files(paths: Sequence[str]) -> List[Path]:
     if not files:
         raise ValueError("沒有可檢查的輸入檔案")
     for p in files:
-        if not p.read_text(encoding="utf-8").strip():
+        try:
+            content = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"不是 UTF-8：{p}（位元組位置 {exc.start}：{exc.reason}）") from exc
+        if not content.strip():
             raise ValueError(f"輸入檔案為空：{p}")
     return list(dict.fromkeys(files))
+
+
+def _atomic_write(target: Path, content: str) -> None:
+    """Write beside the target, then os.replace: a failure never leaves a truncated file."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    try:
+        # newline="" 保留原檔換行：Windows 上預設的文字模式會把 LF 全部寫成 CRLF。
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+        shutil.copymode(target, tmp)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
@@ -453,15 +543,21 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             exit_code = 1
 
     if args.fix is not None:
+        # Compute every rewrite and confirm every target is writable before the first write.
+        planned: List[Tuple[Path, Path, str]] = []
         for fpath in fix_files:
-            # newline="" 保留原檔換行：Windows 上預設的文字模式會把 LF 全部寫成 CRLF。
             with fpath.open(encoding="utf-8", newline="") as handle:
                 orig = handle.read()
             fixed = apply_zhtw_vocab(orig, skip_code=True)
             if fixed != orig:
-                with fpath.open("w", encoding="utf-8", newline="") as handle:
-                    handle.write(fixed)
-                print(f"[FIXED] {fpath}")
+                target = fpath.resolve()
+                if not os.access(target, os.W_OK):
+                    print(f"[ERROR] 無法寫入，所有檔案都未修改：{fpath}", file=sys.stderr)
+                    return 2
+                planned.append((fpath, target, fixed))
+        for fpath, target, fixed in planned:
+            _atomic_write(target, fixed)
+            print(f"[FIXED] {fpath}")
 
     if args.check is not None:
         total_findings = 0

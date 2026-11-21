@@ -35,4 +35,4 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Self-check own docs
-        run: python tools/verify_zhtw_vocab.py --verify-idempotent --check README.md AGENTS.md ROADMAP.md docs
+        run: python tools/verify_zhtw_vocab.py --verify-idempotent --check README.md AGENTS.md ROADMAP.md REVIEW.md docs

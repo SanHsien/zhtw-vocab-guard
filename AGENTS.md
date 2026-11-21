@@ -20,7 +20,7 @@
 ```
 
 - 測試指令：`python -m unittest discover -s tests`。**不設 `PYTHONUTF8`**，要抓得到只在 Windows 預設編碼（cp950／cp1252）才發生的錯誤。
-- 自我檢查：`python tools/verify_zhtw_vocab.py --verify-idempotent --check README.md AGENTS.md ROADMAP.md docs`。
+- 自我檢查：`python tools/verify_zhtw_vocab.py --verify-idempotent --check README.md AGENTS.md ROADMAP.md REVIEW.md docs`。
 - CI 跑 ubuntu-latest 與 windows-latest 的 Python 3.11；本機另以目前的 Python 版本跑一次。
 - 測試與 `git commit` 之間用 `&&` 串接，不用 `;`：測試紅燈就不得提交。
 - 不改寫已提交的歷史（本 repo 保留 ai-inbox 的原始歷史）。

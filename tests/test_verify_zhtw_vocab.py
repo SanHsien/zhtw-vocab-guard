@@ -449,6 +449,101 @@ class TestVerifyZhtwVocab(unittest.TestCase):
         ])
         self.assertTrue(ok, failures)
 
+    # ── 2026-11-21 對抗覆核（REVIEW.md Z1–Z9）────────────────────────────────
+    def test_nested_and_prefixed_fences_are_protected(self):
+        # Z1：清單內縮排 4 格、Tab、引用區塊、清單標記後、BOM 開頭的圍欄，--fix 都不可改到程式碼。
+        for fence in [
+            "1. 步驟\n\n    ```bash\n    啟動服務器\n    ```\n",
+            "-\t```\n\t服務器\n\t```\n",
+            "> ```\n> 服務器\n> ```\n",
+            "> > ~~~\n> > 數據庫\n> > ~~~\n",
+            "- ```bash\n  服務器\n  ```\n",
+            "﻿```\n服務器\n```\n",
+            # 較短的同字元 run 不能關閉較長的圍欄（mutation 覆核補上的缺口）。
+            "````md\n```\n服務器\n```\n````\n",
+        ]:
+            with self.subTest(fence=fence):
+                self.assert_protected(fence)
+                tail = fence + "圍欄外的視頻\n"
+                self.assertEqual([h["term"] for h in scan_degraded_vocab(tail)], ["視頻"])
+                self.assertEqual(apply_zhtw_vocab(tail, skip_code=True), fence + "圍欄外的影片\n")
+
+    def test_compound_words_are_not_split_by_rules(self):
+        # Z2–Z5：規則字串跨詞邊界，--fix 會改壞真詞。
+        for raw in ["TypeScript 的型別別名（type alias）", "錯誤的資源代碼、來源代碼、電源代碼、能源代碼",
+                    "這個命令行為和舊版不同；依命令行動；命令行事", "明瞭什麼是閉包"]:
+            with self.subTest(raw=raw):
+                self.assert_protected(raw)
+        for raw, expected in [
+            ("型別別與型別別名", "型別與型別別名"),
+            ("型別別別名", "型別別名"),
+            ("取得源代碼", "取得原始碼"),
+            ("開源代碼庫", "開源程式碼庫"),
+            ("公開源代碼", "公開原始碼"),
+            ("命令行使用說明與命令行參數", "命令列使用說明與命令列參數"),
+            ("發生瞭什麼", "發生了什麼"),
+        ]:
+            with self.subTest(raw=raw):
+                self.assertTrue(scan_degraded_vocab(raw))
+                self.assertEqual(apply_zhtw_vocab(raw, skip_code=True), expected)
+                self.assertEqual(apply_zhtw_vocab(expected, skip_code=True), expected)
+                self.assertEqual(scan_degraded_vocab(expected), [])
+        self.assertEqual([(h["term"], h["replacement"]) for h in scan_degraded_vocab("開源代碼庫")],
+                         [("開源代碼", "開源程式碼")])
+        self.assertTrue(verify_idempotence(["開源代碼與公開源代碼、型別別別名"])[0])
+
+    def test_many_hits_on_one_line_stay_linear(self):
+        # Z6：大量命中在同一行時，修補與掃描不可退化成平方時間。
+        raw = "視頻" * 100000
+        started = time.perf_counter()
+        self.assertEqual(apply_zhtw_vocab(raw, skip_code=True), "影片" * 100000)
+        self.assertEqual(len(scan_degraded_vocab(raw)), 100000)
+        # 疊字退化每次只消一層：舊版固定點迴圈要重掃全文 k 次，還保留 k 份全文副本。
+        self.assertEqual(apply_zhtw_vocab("字面量（Literal）" + "（Literal）" * 20000, skip_code=True),
+                         "字面量（Literal）")
+        self.assertEqual(apply_zhtw_vocab("型別" + "別" * 100000 + "名", skip_code=True), "型別別名")
+        self.assertLess(time.perf_counter() - started, 5.0)
+
+    def test_cli_encoding_error_names_the_file(self):
+        # Z7：非 UTF-8 檔的錯誤訊息要指出是哪一個檔。
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "cp950.md"
+            bad.write_bytes("服務器".encode("cp950"))
+            err = io.StringIO()
+            with patch("sys.stderr", err), redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["--check", tmp]), 2)
+            self.assertIn("cp950.md", err.getvalue())
+
+    def test_fix_checks_writability_before_any_write(self):
+        # Z8：--fix 先確認全部目標可寫，任一不可寫就一個都不動。
+        import stat
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "a.md"
+            locked = Path(tmp) / "b.md"
+            first.write_text("服務器\n", encoding="utf-8")
+            locked.write_text("服務器\n", encoding="utf-8")
+            os.chmod(locked, stat.S_IREAD)
+            try:
+                if os.access(locked, os.W_OK):
+                    self.skipTest("目前帳號可寫入唯讀檔（例如 root）")
+                with redirect_stdout(io.StringIO()), patch("sys.stderr", io.StringIO()):
+                    self.assertEqual(main(["--fix", str(first), str(locked)]), 2)
+                self.assertEqual(first.read_text(encoding="utf-8"), "服務器\n")
+                self.assertEqual(locked.read_text(encoding="utf-8"), "服務器\n")
+            finally:
+                os.chmod(locked, stat.S_IREAD | stat.S_IWRITE)
+
+    def test_fix_write_failure_keeps_original_file(self):
+        # Z9：寫入中途失敗不可留下截斷的檔案或暫存檔。
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.md"
+            path.write_text("服務器\n", encoding="utf-8")
+            with patch.object(vocab.os, "replace", side_effect=OSError("disk full")), \
+                    redirect_stdout(io.StringIO()), patch("sys.stderr", io.StringIO()):
+                self.assertEqual(main(["--fix", str(path)]), 2)
+            self.assertEqual(path.read_text(encoding="utf-8"), "服務器\n")
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["a.md"])
+
     def test_cli_check_and_fix_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "sample.md"
