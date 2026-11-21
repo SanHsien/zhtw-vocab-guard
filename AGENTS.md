@@ -38,5 +38,6 @@ docs/zhtw-fork-idempotent-sync-spec.md   上游繁中 Fork 同步做法對照與
 .github/workflows/codeql.yml   CodeQL（python、actions）
 .github/dependabot.yml         只追 GitHub Actions；freshness、multi-commit 的 waiver 與理由也寫在這裡
 README.md   用途、用法、規則範圍、已知限制
+README.en.md  README.md 的英文鏡像；改 README.md 時同步改它
 ROADMAP.md  後續工作與刻意不做的事（單一真相源）
 ```

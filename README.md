@@ -1,3 +1,5 @@
+[English](README.en.md) · 繁體中文
+
 # zhtw-vocab-guard
 
 台灣繁體中文技術詞彙檢查器：掃描 Markdown 文件裡的大陸慣用技術詞，以及 OpenCC 把簡體轉成繁體時留下的二次退化詞，可以只檢查，也可以就地修補。單一 Python 檔，只用標準函式庫，不連網。
