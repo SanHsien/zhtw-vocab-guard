@@ -124,13 +124,45 @@ class TestVerifyZhtwVocab(unittest.TestCase):
                 self.assertNotEqual(apply_zhtw_vocab(raw, skip_code=True), raw)
         self.assert_protected("「" + "a" * 196 + "視頻」")
 
+    def count_scan_steps(self, raw, expected_hits):
+        """回傳掃描時在檢查器模組內執行的 Python 行數（sys.settrace 的 line 事件）。
+
+        行數只跟輸入與演算法有關，跟機器忙不忙無關。只算得到 Python 層的迴圈，
+        C 層（例如單一個 str.find）的平方時間量不到，所以另留一個很寬的秒數上限防卡死。
+        """
+        module_file = vocab.__file__
+        steps = 0
+
+        def tracer(frame, event, _arg):
+            nonlocal steps
+            if frame.f_code.co_filename != module_file:
+                return None
+            if event == "line":
+                steps += 1
+            return tracer
+
+        previous = sys.gettrace()
+        started = time.perf_counter()
+        sys.settrace(tracer)
+        try:
+            hits = scan_degraded_vocab(raw)
+        finally:
+            sys.settrace(previous)
+        self.assertLess(time.perf_counter() - started, 30.0)
+        self.assertEqual(len(hits), expected_hits)
+        return steps
+
+    def assert_unclosed_scan_is_linear(self, token):
+        # 規模放大 4 倍：線性的步數約 4 倍，平方約 16 倍；門檻取 8 倍。
+        small = self.count_scan_steps((token + " 視頻\n") * 300, 300)
+        large = self.count_scan_steps((token + " 視頻\n") * 1200, 1200)
+        self.assertGreater(small, 300)
+        self.assertLess(large / small, 8.0, f"n: {small} steps, 4n: {large} steps")
+
     def test_unclosed_protection_has_bounded_runtime(self):
         for token in ["「", "]("]:
             with self.subTest(token=token):
-                raw = (token + " 視頻\n") * 5000
-                started = time.perf_counter()
-                self.assertEqual(len(scan_degraded_vocab(raw)), 5000)
-                self.assertLess(time.perf_counter() - started, 3.0)
+                self.assert_unclosed_scan_is_linear(token)
 
     def test_url_stops_before_chinese_prose(self):
         for raw, expected in [
@@ -659,10 +691,7 @@ class TestVerifyZhtwVocab(unittest.TestCase):
     def test_unclosed_title_marks_have_bounded_runtime(self):
         for token in ["《", "〈"]:
             with self.subTest(token=token):
-                raw = (token + " 視頻\n") * 5000
-                started = time.perf_counter()
-                self.assertEqual(len(scan_degraded_vocab(raw)), 5000)
-                self.assertLess(time.perf_counter() - started, 3.0)
+                self.assert_unclosed_scan_is_linear(token)
 
     def test_cli_title_marks_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
